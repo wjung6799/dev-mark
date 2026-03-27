@@ -28,7 +28,7 @@ export function generateAndOpenBranchMap(
   events: GitEvent[]
 ): string {
   const projectName = projectPath.split("/").pop() || "project";
-  const html = buildHtml(branches, events, projectName);
+  const html = buildHtml(branches, projectName);
   const dir = join(projectPath, ".devguard");
   mkdirSync(dir, { recursive: true });
   const filePath = join(dir, "branch-map.html");
@@ -59,921 +59,1135 @@ function esc(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-const BRANCH_COLORS = [
-  "#4A90D9", // blue (main)
-  "#8e44ad", // purple
-  "#27ae60", // green
-  "#c0392b", // red
-  "#e67e22", // orange
-  "#1abc9c", // teal
-  "#e74c3c", // bright red
-  "#2ecc71", // emerald
-  "#9b59b6", // amethyst
-  "#f39c12", // sunflower
-];
+function buildSummaryCell(b: BranchData): string {
+  if (b.diaryEntries.length === 0) {
+    return esc(b.summary);
+  }
 
-function buildHtml(
-  branches: BranchData[],
-  events: GitEvent[],
-  projectName: string
-): string {
-  const branchesJson = JSON.stringify(branches);
-  const eventsJson = JSON.stringify(events);
+  const allChanges: string[] = [];
+  const allDecisions: string[] = [];
+  const allIssues: string[] = [];
+  const titles: string[] = [];
+
+  for (const entry of b.diaryEntries) {
+    if (entry.title) titles.push(entry.title);
+    allChanges.push(...entry.whatChanged);
+    allDecisions.push(...entry.decisions);
+    allIssues.push(...entry.issues);
+  }
+
+  const nextSteps = b.diaryEntries[b.diaryEntries.length - 1]?.nextSteps || [];
+
+  let html = `<div class="summary-title">${esc(b.summary)}</div>`;
+
+  if (titles.length > 1) {
+    html += `<div class="summary-timeline"><span class="section-label">Timeline</span> ${titles.map(t => esc(t)).join(" &rarr; ")}</div>`;
+  }
+
+  if (allChanges.length > 0) {
+    html += `<div class="summary-section changes"><span class="section-label">Changes</span><ul>${allChanges.map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
+  }
+
+  if (allDecisions.length > 0) {
+    html += `<div class="summary-section decisions"><span class="section-label">Decisions</span><ul>${allDecisions.map(d => `<li>${esc(d)}</li>`).join("")}</ul></div>`;
+  }
+
+  if (allIssues.length > 0) {
+    html += `<div class="summary-section issues"><span class="section-label">Issues</span><ul>${allIssues.map(i => `<li>${esc(i)}</li>`).join("")}</ul></div>`;
+  }
+
+  if (nextSteps.length > 0) {
+    html += `<div class="summary-section next-steps"><span class="section-label">Next</span><ul>${nextSteps.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>`;
+  }
+
+  return html;
+}
+
+function categorizeCommit(message: string): string {
+  const msg = message.toLowerCase();
+  if (msg.startsWith("fix") || msg.includes("bug") || msg.includes("patch") || msg.includes("hotfix")) return "Bug Fix";
+  if (msg.startsWith("feat") || msg.startsWith("add") || msg.startsWith("implement") || msg.startsWith("create")) return "Feature";
+  if (msg.startsWith("refactor") || msg.startsWith("restructure") || msg.startsWith("reorganize") || msg.startsWith("clean")) return "Refactor";
+  if (msg.startsWith("doc") || msg.startsWith("readme") || msg.includes("comment")) return "Documentation";
+  if (msg.startsWith("test") || msg.includes("spec")) return "Testing";
+  if (msg.startsWith("style") || msg.startsWith("format") || msg.startsWith("lint")) return "Styling";
+  if (msg.startsWith("build") || msg.startsWith("ci") || msg.includes("deploy") || msg.includes("pipeline")) return "Build/CI";
+  if (msg.startsWith("update") || msg.startsWith("upgrade") || msg.startsWith("bump")) return "Update";
+  if (msg.startsWith("revert")) return "Revert";
+  if (msg.startsWith("merge")) return "Merge";
+  if (msg.startsWith("set up") || msg.startsWith("setup") || msg.startsWith("init") || msg.startsWith("initial")) return "Setup";
+  return "Change";
+}
+
+function describeAreas(files: string[]): string {
+  const areas = new Map<string, string[]>();
+  for (const f of files) {
+    const parts = f.split("/");
+    let area: string;
+    if (parts.length === 1) {
+      area = "root config";
+    } else if (parts[0] === "src" && parts.length >= 3) {
+      area = parts[1]; // e.g. "tools", "utils", "components"
+    } else {
+      area = parts[0];
+    }
+    if (!areas.has(area)) areas.set(area, []);
+    areas.get(area)!.push(parts[parts.length - 1]);
+  }
+  return [...areas.entries()]
+    .map(([area, fileNames]) => {
+      const label = area.replace(/[-_]/g, " ");
+      if (fileNames.length <= 2) return `${label} (${fileNames.join(", ")})`;
+      return `${label} (${fileNames.length} files)`;
+    })
+    .join(", ");
+}
+
+function generateCommitSummary(c: CommitNode): string {
+  const files = c.files || [];
+  const ins = c.insertions || 0;
+  const del = c.deletions || 0;
+  const body = c.body || "";
+
+  const category = categorizeCommit(c.message);
+  const parts: string[] = [];
+
+  // Category + commit message
+  parts.push(`[${category}] ${c.message}`);
+
+  // Commit body if present (first meaningful line)
+  if (body) {
+    const bodyLines = body.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("Co-Authored") && !l.startsWith("Signed-off"));
+    if (bodyLines.length > 0) {
+      parts.push(bodyLines.slice(0, 2).join(". "));
+    }
+  }
+
+  // Areas affected
+  if (files.length > 0) {
+    parts.push(`Areas: ${describeAreas(files)}`);
+  }
+
+  // Scale of change
+  if (ins > 0 || del > 0) {
+    const net = ins - del;
+    const scale = ins + del > 500 ? "large" : ins + del > 100 ? "moderate" : "small";
+    parts.push(`${scale} change (+${ins}/-${del}, net ${net >= 0 ? "+" : ""}${net} lines)`);
+  }
+
+  return parts.join(" — ");
+}
+
+/** Serialize all branch data as JSON for the branch viewer JS */
+function buildBranchDataJson(branches: BranchData[]): string {
+  const data = branches.map(b => {
+    const diaryByCommit = new Map<string, DiaryEntry>();
+    for (const entry of b.diaryEntries) {
+      if (entry.commit) diaryByCommit.set(entry.commit, entry);
+    }
+
+    return {
+      name: b.name,
+      isCurrent: b.isCurrent,
+      isMain: b.isMain,
+      summary: b.summary,
+      ahead: b.ahead,
+      behind: b.behind,
+      filesChanged: b.filesChanged,
+      commits: b.commits.map(c => ({
+        shortHash: c.shortHash,
+        message: c.message,
+        author: c.author,
+        date: c.date,
+        timestamp: c.timestamp,
+        files: c.files || [],
+        insertions: c.insertions || 0,
+        deletions: c.deletions || 0,
+        commitSummary: diaryByCommit.has(c.shortHash)
+          ? diaryByCommit.get(c.shortHash)!.summary
+          : generateCommitSummary(c),
+        diary: diaryByCommit.has(c.shortHash) ? {
+          title: diaryByCommit.get(c.shortHash)!.title,
+          summary: diaryByCommit.get(c.shortHash)!.summary,
+          whatChanged: diaryByCommit.get(c.shortHash)!.whatChanged,
+          decisions: diaryByCommit.get(c.shortHash)!.decisions,
+          issues: diaryByCommit.get(c.shortHash)!.issues,
+          nextSteps: diaryByCommit.get(c.shortHash)!.nextSteps,
+        } : null,
+      })),
+    };
+  });
+  return JSON.stringify(data);
+}
+
+function buildHtml(branches: BranchData[], projectName: string): string {
   const now = new Date().toLocaleString();
+  const branchDataJson = buildBranchDataJson(branches);
+
+  const rows = branches.map((b, idx) => {
+    const badge = b.isCurrent
+      ? `<span class="badge current">current</span>`
+      : b.isMain
+      ? `<span class="badge main">main</span>`
+      : "";
+
+    const status = b.isMain
+      ? "\u2014"
+      : b.ahead > 0 || b.behind > 0
+      ? `${b.ahead} ahead / ${b.behind} behind`
+      : "even";
+
+    const files = b.isMain ? "\u2014" : `${b.filesChanged}`;
+
+    const lastCommit = b.commits.length > 0
+      ? `<span class="hash">${esc(b.commits[0].shortHash)}</span> ${esc(b.commits[0].message)}`
+      : "\u2014";
+
+    const lastDate = b.commits.length > 0
+      ? new Date(b.commits[0].timestamp * 1000).toLocaleDateString()
+      : "\u2014";
+
+    const summaryHtml = buildSummaryCell(b);
+    const commitCount = b.commits.length;
+    const diaryCount = b.diaryEntries.filter(e => e.commit).length;
+    const expandHint = commitCount > 0
+      ? `<span class="expand-hint">${commitCount} commits${diaryCount > 0 ? `, ${diaryCount} logged` : ""} &mdash; click to explore</span>`
+      : "";
+
+    return `<tr class="branch-row ${b.isCurrent ? "current-row" : ""}" onclick="openBranchViewer(${idx})" data-branch="${idx}">
+      <td class="branch-name">
+        <span class="expand-arrow">&#9654;</span>
+        ${esc(b.name)} ${badge}
+      </td>
+      <td class="summary-cell">${summaryHtml}${expandHint}</td>
+      <td class="center">${status}</td>
+      <td class="center">${files}</td>
+      <td class="commit">${lastCommit}</td>
+      <td class="center">${lastDate}</td>
+    </tr>`;
+  });
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multiverse Git Navigator — ${esc(projectName)}</title>
+<title>Branch Map \u2014 ${esc(projectName)}</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
-  :root {
-    --bg: #f5f1eb;
-    --sidebar-bg: #ede8e0;
-    --surface: #ffffff;
-    --header-bg: #2d4a3e;
-    --header-text: #ffffff;
-    --text: #2c3e50;
-    --text-muted: #7f8c8d;
-    --text-light: #95a5a6;
-    --border: #d5cfc5;
-    --border-light: #e8e3db;
-    --accent: #1abc9c;
-    --blue: #4A90D9;
-    --green: #27ae60;
-    --red: #c0392b;
-    --purple: #8e44ad;
-    --orange: #e67e22;
-  }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    overflow: hidden;
-    height: 100vh;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    overflow-x: hidden;
   }
 
-  /* ─── Header ─── */
-  .topbar {
-    background: var(--header-bg);
-    color: var(--header-text);
-    height: 48px;
+  /* ========== TABLE VIEW ========== */
+
+  #table-view {
+    padding: 32px;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+
+  #table-view.hidden {
+    opacity: 0;
+    transform: translateX(-40px);
+    pointer-events: none;
+    position: absolute;
+  }
+
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #ffffff;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 24px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th {
+    text-align: left;
+    padding: 10px 14px;
+    background: #16213e;
+    color: #aaa;
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #0f3460;
+  }
+
+  th.center, td.center { text-align: center; }
+
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid #222244;
+    vertical-align: top;
+  }
+
+  .branch-row { cursor: pointer; transition: background 0.15s; }
+  .branch-row:hover { background: #16213e; }
+  .branch-row.current-row { background: #1a2744; }
+  .branch-row.current-row:hover { background: #1e2f52; }
+
+  .expand-arrow {
+    display: inline-block;
+    font-size: 10px;
+    margin-right: 6px;
+    color: #666;
+  }
+  .branch-row:hover .expand-arrow { color: #4fc3f7; }
+
+  .expand-hint {
+    display: block;
+    font-size: 10px;
+    color: #555;
+    margin-top: 4px;
+    font-style: italic;
+  }
+  .branch-row:hover .expand-hint { color: #4fc3f7; }
+
+  .branch-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+    white-space: nowrap;
+    color: #ffffff;
+  }
+
+  .badge {
+    display: inline-block;
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .badge.current {
+    background: #0f3460;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+  }
+
+  .badge.main {
+    background: #1b4332;
+    color: #52b788;
+    border: 1px solid #52b788;
+  }
+
+  .commit {
+    font-size: 12px;
+    color: #bbb;
+  }
+
+  .hash {
+    font-family: 'JetBrains Mono', monospace;
+    color: #888;
+    font-size: 11px;
+  }
+
+  .summary-cell { max-width: 500px; }
+
+  .summary-title {
+    font-weight: 500;
+    color: #e0e0e0;
+    margin-bottom: 6px;
+  }
+
+  .summary-timeline {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 6px;
+    line-height: 1.4;
+  }
+
+  .summary-section {
+    font-size: 11px;
+    margin-bottom: 4px;
+    line-height: 1.4;
+  }
+
+  .summary-section ul {
+    margin: 2px 0 0 14px;
+    padding: 0;
+    color: #bbb;
+  }
+
+  .summary-section li { margin-bottom: 1px; }
+
+  .section-label {
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-right: 4px;
+  }
+
+  .changes .section-label { color: #4fc3f7; }
+  .decisions .section-label { color: #ce93d8; }
+  .issues .section-label { color: #ef9a9a; }
+  .next-steps .section-label { color: #a5d6a7; }
+  .summary-timeline .section-label { color: #ffcc80; }
+
+  /* ========== BRANCH VIEWER ========== */
+
+  #branch-viewer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #1a1a2e;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transform: translateX(40px);
+    pointer-events: none;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+
+  #branch-viewer.active {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: all;
+  }
+
+  /* --- Viewer Header --- */
+
+  .viewer-header {
     display: flex;
     align-items: center;
-    padding: 0 20px;
-    justify-content: space-between;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-    z-index: 100;
-    position: relative;
-  }
-  .topbar-left { display: flex; align-items: center; gap: 14px; }
-  .topbar-menu { font-size: 20px; opacity: 0.7; cursor: pointer; }
-  .topbar-title {
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
-  .topbar-actions { display: flex; gap: 16px; align-items: center; }
-  .topbar-icon {
-    width: 18px; height: 18px;
-    opacity: 0.6;
-    cursor: pointer;
-    transition: opacity 0.2s;
-  }
-  .topbar-icon:hover { opacity: 1; }
-  .topbar-search {
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.15);
-    border-radius: 6px;
-    padding: 5px 12px;
-    color: white;
-    font-size: 12px;
-    width: 180px;
-    outline: none;
-  }
-  .topbar-search::placeholder { color: rgba(255,255,255,0.4); }
-
-  /* ─── Layout ─── */
-  .layout {
-    display: flex;
-    height: calc(100vh - 48px - 90px);
-  }
-
-  /* ─── Sidebar ─── */
-  .sidebar {
-    width: 280px;
-    background: var(--sidebar-bg);
-    border-right: 1px solid var(--border);
-    overflow-y: auto;
-    padding: 16px;
+    gap: 16px;
+    padding: 16px 24px;
+    background: #16213e;
+    border-bottom: 2px solid #0f3460;
     flex-shrink: 0;
   }
-  .panel { margin-bottom: 24px; }
-  .panel-title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.2px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    margin-bottom: 10px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-  }
 
-  /* Minimap */
-  .minimap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    height: 80px;
-    overflow: hidden;
-    position: relative;
-  }
-  .minimap svg { width: 100%; height: 100%; }
-
-  /* My Position */
-  .position-branch {
-    font-weight: 700;
-    font-size: 14px;
-    color: var(--text);
+  .back-btn {
+    background: none;
+    border: 1px solid #333;
+    color: #4fc3f7;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
     display: flex;
     align-items: center;
     gap: 6px;
   }
-  .position-branch .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-  .position-commit {
-    font-size: 12px;
-    color: var(--text-muted);
-    margin-top: 6px;
+  .back-btn:hover { background: #1a2744; border-color: #4fc3f7; }
+
+  .viewer-branch-name {
     font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
   }
 
-  /* Active Universes */
-  .universe-list { list-style: none; }
-  .universe-item {
+  .viewer-meta {
+    display: flex;
+    gap: 16px;
+    margin-left: auto;
+    font-size: 12px;
+    color: #888;
+  }
+
+  .viewer-meta-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 7px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    transition: background 0.15s;
-  }
-  .universe-item:hover { background: rgba(0,0,0,0.05); }
-  .universe-item.active { background: rgba(0,0,0,0.08); font-weight: 600; }
-  .universe-dot {
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    border: 2px solid transparent;
-  }
-  .universe-expand {
-    margin-left: auto;
-    font-size: 14px;
-    color: var(--text-light);
-    font-weight: 400;
+    gap: 4px;
   }
 
-  /* Events */
-  .event-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 5px 0;
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-  .event-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
-
-  /* ─── Canvas ─── */
-  .canvas-area {
-    flex: 1;
-    position: relative;
-    overflow: auto;
-    background: var(--bg);
-  }
-  .canvas-area svg {
-    width: 100%;
-    min-width: 900px;
-    height: 100%;
-  }
-
-  /* SVG styles */
-  .branch-line {
-    fill: none;
-    stroke-width: 3;
-    stroke-linecap: round;
-  }
-  .branch-arrow { stroke: none; }
-  .commit-node {
-    cursor: pointer;
-    transition: r 0.15s;
-  }
-  .commit-node:hover { r: 10; }
-  .event-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-  }
-  .branch-label-text {
-    font-size: 12px;
-    font-weight: 600;
-    fill: var(--text-muted);
-  }
-
-  /* Commit tooltip */
-  .commit-tooltip {
-    position: fixed;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 16px;
-    font-size: 12px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    pointer-events: none;
-    z-index: 200;
-    display: none;
-    max-width: 320px;
-    line-height: 1.5;
-  }
-  .tooltip-hash {
+  .viewer-meta-value {
+    color: #ccc;
     font-family: 'JetBrains Mono', monospace;
-    color: var(--blue);
-    font-weight: 600;
-    font-size: 11px;
   }
-  .tooltip-msg { margin-top: 4px; font-weight: 500; }
-  .tooltip-author { color: var(--text-muted); margin-top: 2px; font-size: 11px; }
 
-  /* ─── Detail Panel ─── */
-  .detail-panel {
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 0;
+  .viewer-summary {
+    font-size: 13px;
+    color: #a0b4c8;
+    padding: 10px 14px;
+    margin-top: 10px;
+    background: #16213e;
+    border-left: 3px solid #4fc3f7;
+    border-radius: 4px;
+    line-height: 1.5;
+    font-style: italic;
+  }
+
+  /* --- Viewer Body (two columns) --- */
+
+  .viewer-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* --- Left: Commit Timeline --- */
+
+  .viewer-timeline {
     width: 340px;
-    max-height: calc(100% - 40px);
-    overflow-y: auto;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.12);
-    z-index: 50;
-    display: none;
+    min-width: 340px;
+    border-right: 1px solid #222244;
+    display: flex;
+    flex-direction: column;
+    background: #151530;
   }
-  .detail-header {
-    padding: 18px 20px 14px;
-    border-bottom: 1px solid var(--border-light);
-    position: sticky;
-    top: 0;
-    background: var(--surface);
-    border-radius: 14px 14px 0 0;
+
+  .timeline-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid #222244;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
   }
-  .detail-close {
-    position: absolute;
-    top: 14px;
-    right: 16px;
-    cursor: pointer;
-    font-size: 18px;
-    color: var(--text-muted);
-    background: none;
-    border: none;
-    padding: 4px;
-    line-height: 1;
+
+  .timeline-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    font-weight: 500;
   }
-  .detail-close:hover { color: var(--text); }
-  .detail-name {
-    font-size: 16px;
-    font-weight: 700;
+
+  .timeline-nav {
     display: flex;
     align-items: center;
     gap: 8px;
   }
-  .detail-name .dot {
-    width: 12px; height: 12px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-  .detail-status {
-    font-size: 12px;
-    margin-top: 6px;
-    color: var(--text-muted);
-  }
-  .detail-status .ahead { color: var(--green); font-weight: 700; }
-  .detail-status .behind { color: var(--red); font-weight: 700; }
 
-  .detail-stats {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 4px 16px;
-    padding: 14px 20px;
-    border-bottom: 1px solid var(--border-light);
-    font-size: 13px;
-  }
-  .detail-stat-label { color: var(--text-muted); }
-  .detail-stat-value { font-weight: 700; text-align: right; }
-
-  .detail-chart {
-    margin: 14px 20px;
-    height: 50px;
-    background: var(--bg);
-    border-radius: 8px;
-    overflow: hidden;
-    position: relative;
-  }
-  .detail-chart svg { width: 100%; height: 100%; }
-
-  /* Diary entries in detail panel */
-  .detail-diary {
-    padding: 0 20px 16px;
-  }
-  .diary-entry {
-    margin-bottom: 16px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--border-light);
-  }
-  .diary-entry:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-  .diary-entry-title {
-    font-size: 13px;
-    font-weight: 700;
-    margin-bottom: 6px;
-    line-height: 1.4;
-  }
-  .diary-entry-date {
+  .timeline-nav-btn {
+    background: #16213e;
+    color: #4fc3f7;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    padding: 3px 8px;
     font-size: 10px;
-    color: var(--text-light);
-    margin-bottom: 8px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: background 0.15s;
+  }
+  .timeline-nav-btn:hover { background: #1e2f52; }
+
+  .timeline-position {
     font-family: 'JetBrains Mono', monospace;
-  }
-  .diary-section {
-    margin-top: 8px;
-  }
-  .diary-section-title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    margin-bottom: 4px;
-  }
-  .diary-section-title.changes { color: var(--blue); }
-  .diary-section-title.decisions { color: var(--purple); }
-  .diary-section-title.issues { color: var(--red); }
-  .diary-section-title.next-steps { color: var(--green); }
-  .diary-section ul {
-    list-style: none;
-    padding: 0;
-  }
-  .diary-section li {
-    font-size: 12px;
-    color: var(--text-muted);
-    padding: 2px 0 2px 12px;
-    position: relative;
-    line-height: 1.5;
-  }
-  .diary-section li::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 9px;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--border);
+    font-size: 11px;
+    color: #666;
+    min-width: 50px;
+    text-align: center;
   }
 
-  /* ─── Scrubber ─── */
-  .scrubber {
-    height: 90px;
-    background: var(--sidebar-bg);
-    border-top: 1px solid var(--border);
-    padding: 12px 40px 16px;
+  .timeline-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .timeline-list::-webkit-scrollbar { width: 5px; }
+  .timeline-list::-webkit-scrollbar-track { background: #151530; }
+  .timeline-list::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  .tl-commit {
+    display: flex;
+    gap: 12px;
+    padding: 8px 18px;
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .tl-commit:hover { background: #1a2744; }
+  .tl-commit.active { background: #16213e; }
+
+  .tl-dot-col {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
-  }
-  .scrubber-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.2px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-  }
-  .scrubber-track {
-    width: 70%;
-    position: relative;
-    height: 24px;
-    margin: 4px 0;
-  }
-  .scrubber-bar {
-    position: absolute;
-    top: 50%;
-    left: 0; right: 0;
-    height: 4px;
-    background: var(--border);
-    border-radius: 2px;
-    transform: translateY(-50%);
-  }
-  .scrubber-highlight {
-    position: absolute;
-    top: 50%;
-    height: 6px;
-    background: var(--accent);
-    border-radius: 3px;
-    transform: translateY(-50%);
-    left: 10%;
-    right: 10%;
-  }
-  .scrubber-handle {
-    position: absolute;
-    top: 50%;
-    width: 14px; height: 14px;
-    background: var(--accent);
-    border: 2px solid white;
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    cursor: grab;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-    z-index: 2;
-  }
-  .scrubber-dates {
-    display: flex;
-    justify-content: space-between;
-    width: 70%;
-    font-size: 11px;
-    color: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .scrubber-range-badge {
-    background: var(--accent);
-    color: white;
-    padding: 3px 14px;
-    border-radius: 10px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    width: 16px;
+    flex-shrink: 0;
+    padding-top: 4px;
   }
 
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--text-light); }
+  .tl-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #333;
+    border: 2px solid #555;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    z-index: 1;
+  }
+
+  .tl-commit:first-child .tl-dot {
+    border-color: #a5d6a7;
+    background: #2e7d32;
+    box-shadow: 0 0 6px rgba(76,175,80,0.4);
+  }
+
+  .tl-commit.has-diary .tl-dot {
+    background: #4fc3f7;
+    border-color: #4fc3f7;
+    box-shadow: 0 0 6px rgba(79,195,247,0.4);
+  }
+
+  .tl-commit.active .tl-dot {
+    transform: scale(1.3);
+    box-shadow: 0 0 10px rgba(79,195,247,0.6);
+  }
+
+  .tl-line {
+    width: 2px;
+    flex-grow: 1;
+    background: #333;
+    min-height: 16px;
+  }
+
+  .tl-info {
+    flex: 1;
+    min-width: 0;
+    padding-bottom: 4px;
+  }
+
+  .tl-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .tl-hash {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #888;
+    flex-shrink: 0;
+  }
+
+  .tl-msg {
+    font-size: 13px;
+    color: #ddd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tl-meta {
+    font-size: 11px;
+    color: #555;
+    margin-top: 2px;
+  }
+
+  .tl-diary-badge {
+    font-size: 9px;
+    background: #0f3460;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+    border-radius: 3px;
+    padding: 1px 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-left: 6px;
+  }
+
+  /* --- Right: Detail Panel --- */
+
+  .viewer-detail {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 36px;
+  }
+
+  .viewer-detail::-webkit-scrollbar { width: 6px; }
+  .viewer-detail::-webkit-scrollbar-track { background: #1a1a2e; }
+  .viewer-detail::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  .detail-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #444;
+    font-size: 14px;
+  }
+
+  /* Commit detail header */
+  .detail-commit-header {
+    margin-bottom: 24px;
+  }
+
+  .detail-commit-msg {
+    font-size: 20px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+
+  .detail-commit-meta {
+    display: flex;
+    gap: 20px;
+    font-size: 12px;
+    color: #888;
+    flex-wrap: wrap;
+  }
+
+  .detail-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .detail-meta-label {
+    color: #555;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+  }
+
+  .detail-meta-value {
+    font-family: 'JetBrains Mono', monospace;
+    color: #bbb;
+  }
+
+  .detail-summary-brief {
+    font-size: 13px;
+    color: #a0b4c8;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    background: #16213e;
+    border-left: 3px solid #4fc3f7;
+    border-radius: 4px;
+    line-height: 1.5;
+    font-style: italic;
+  }
+
+  /* Stat bar */
+  .detail-stats {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    padding: 14px 18px;
+    background: #151530;
+    border-radius: 8px;
+    border: 1px solid #222244;
+  }
+
+  .stat-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .stat-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .stat-value.green { color: #a5d6a7; }
+  .stat-value.red { color: #ef9a9a; }
+  .stat-value.blue { color: #4fc3f7; }
+
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: #666;
+  }
+
+  /* Diary section in detail */
+  .detail-diary {
+    margin-bottom: 24px;
+    padding: 18px 22px;
+    background: #1a1a3e;
+    border: 1px solid #2a2a5e;
+    border-radius: 8px;
+    border-left: 3px solid #4fc3f7;
+  }
+
+  .detail-diary-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 14px;
+  }
+
+  .detail-diary-section {
+    margin-bottom: 10px;
+  }
+
+  .detail-diary-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 4px;
+  }
+
+  .detail-diary-section.changes .detail-diary-section-label { color: #4fc3f7; }
+  .detail-diary-section.decisions .detail-diary-section-label { color: #ce93d8; }
+  .detail-diary-section.issues .detail-diary-section-label { color: #ef9a9a; }
+  .detail-diary-section.next-steps .detail-diary-section-label { color: #a5d6a7; }
+
+  .detail-diary-section ul {
+    margin: 0 0 0 16px;
+    padding: 0;
+    font-size: 13px;
+    color: #ccc;
+    line-height: 1.6;
+  }
+
+  .detail-diary-section li { margin-bottom: 2px; }
+
+  /* Files changed list */
+  .detail-files {
+    margin-bottom: 24px;
+  }
+
+  .detail-files-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #888;
+    font-weight: 500;
+    margin-bottom: 10px;
+  }
+
+  .file-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .file-item {
+    padding: 6px 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #bbb;
+    border-radius: 4px;
+    transition: background 0.1s;
+  }
+
+  .file-item:nth-child(odd) { background: #151530; }
+  .file-item:hover { background: #1a2744; }
+
+  .file-icon {
+    color: #4fc3f7;
+    margin-right: 8px;
+    font-style: normal;
+  }
+
+  /* Legend */
+  .timeline-legend {
+    padding: 10px 18px;
+    border-top: 1px solid #222244;
+    display: flex;
+    gap: 14px;
+    font-size: 10px;
+    color: #555;
+    flex-shrink: 0;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .legend-dot.commit-dot {
+    background: #333;
+    border: 2px solid #555;
+  }
+
+  .legend-dot.diary-dot {
+    background: #4fc3f7;
+    border: 2px solid #4fc3f7;
+  }
+
+  .legend-dot.latest-dot {
+    background: #2e7d32;
+    border: 2px solid #a5d6a7;
+  }
 </style>
 </head>
 <body>
 
-<!-- Header -->
-<div class="topbar">
-  <div class="topbar-left">
-    <span class="topbar-menu">&#9776;</span>
-    <span class="topbar-title">Multiverse Git Navigator</span>
-  </div>
-  <div class="topbar-actions">
-    <input class="topbar-search" placeholder="Search branches..." id="searchInput">
-    <svg class="topbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <svg class="topbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
-  </div>
+<!-- ===== TABLE VIEW ===== -->
+<div id="table-view">
+  <h1>Branch Map &mdash; ${esc(projectName)}</h1>
+  <p class="subtitle">Generated ${esc(now)} &mdash; Click a branch to explore</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Branch</th>
+        <th>Summary</th>
+        <th class="center">Status</th>
+        <th class="center">Files Changed</th>
+        <th>Last Commit</th>
+        <th class="center">Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.join("\n      ")}
+    </tbody>
+  </table>
 </div>
 
-<div class="layout">
-  <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="panel">
-      <div class="panel-title">Timeline Overview</div>
-      <div class="minimap" id="minimap"></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">My Position</div>
-      <div id="myPosition"></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">Active Universes</div>
-      <ul class="universe-list" id="universeList"></ul>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">Events</div>
-      <div id="eventList"></div>
-    </div>
-  </aside>
-
-  <!-- Main Canvas -->
-  <div class="canvas-area" id="canvasArea">
-    <svg id="branchCanvas"></svg>
-    <div class="detail-panel" id="detailPanel"></div>
-    <div class="commit-tooltip" id="commitTooltip"></div>
+<!-- ===== BRANCH VIEWER ===== -->
+<div id="branch-viewer">
+  <div class="viewer-header">
+    <button class="back-btn" onclick="closeBranchViewer()">&#9664; All Branches</button>
+    <span class="viewer-branch-name" id="viewer-branch-name"></span>
+    <div class="viewer-meta" id="viewer-meta"></div>
+    <div class="viewer-summary" id="viewer-summary"></div>
   </div>
-</div>
-
-<!-- Temporal Scrubber -->
-<div class="scrubber">
-  <div class="scrubber-label">Temporal Scrubber</div>
-  <div id="scrubberRangeBadge" class="scrubber-range-badge"></div>
-  <div class="scrubber-track" id="scrubberTrack">
-    <div class="scrubber-bar"></div>
-    <div class="scrubber-highlight" id="scrubberHighlight"></div>
-    <div class="scrubber-handle" id="scrubberLeft" style="left: 10%"></div>
-    <div class="scrubber-handle" id="scrubberRight" style="left: 90%"></div>
+  <div class="viewer-body">
+    <div class="viewer-timeline">
+      <div class="timeline-header">
+        <span class="timeline-title">Commits</span>
+        <div class="timeline-nav">
+          <button class="timeline-nav-btn" onclick="viewerNav(-1)">&#9650; Newer</button>
+          <span class="timeline-position" id="viewer-pos"></span>
+          <button class="timeline-nav-btn" onclick="viewerNav(1)">&#9660; Older</button>
+        </div>
+      </div>
+      <div class="timeline-list" id="timeline-list"></div>
+      <div class="timeline-legend">
+        <span class="legend-item"><span class="legend-dot latest-dot"></span> Latest</span>
+        <span class="legend-item"><span class="legend-dot diary-dot"></span> Diary entry</span>
+        <span class="legend-item"><span class="legend-dot commit-dot"></span> Commit</span>
+      </div>
+    </div>
+    <div class="viewer-detail" id="viewer-detail">
+      <div class="detail-empty">Select a commit to view details</div>
+    </div>
   </div>
-  <div class="scrubber-dates" id="scrubberDates"></div>
 </div>
 
 <script>
-const BRANCHES = ${branchesJson};
-const EVENTS = ${eventsJson};
-const PROJECT = ${JSON.stringify(esc(projectName))};
-const COLORS = ${JSON.stringify(BRANCH_COLORS)};
+  const BRANCHES = ${branchDataJson};
 
-// Assign colors
-const colorMap = {};
-BRANCHES.forEach((b, i) => {
-  colorMap[b.name] = b.isMain ? COLORS[0] : COLORS[(i % (COLORS.length - 1)) + 1];
-});
+  let currentBranchIdx = null;
+  let currentCommitIdx = null;
 
-// ─── Sidebar: My Position ───
-(function renderPosition() {
-  const current = BRANCHES.find(b => b.isCurrent) || BRANCHES[0];
-  if (!current) return;
-  const lastCommit = current.commits[0];
-  const el = document.getElementById('myPosition');
-  el.innerHTML = \`
-    <div class="position-branch">
-      <span class="dot" style="background:\${colorMap[current.name]}"></span>
-      \${current.name}
-    </div>
-    <div class="position-commit">\${lastCommit ? lastCommit.shortHash + ' ' + lastCommit.message.slice(0, 40) : 'No commits'}</div>
-  \`;
-})();
+  function openBranchViewer(idx) {
+    const branch = BRANCHES[idx];
+    if (!branch || branch.commits.length === 0) return;
 
-// ─── Sidebar: Active Universes ───
-(function renderUniverses() {
-  const list = document.getElementById('universeList');
-  BRANCHES.forEach(b => {
-    const li = document.createElement('li');
-    li.className = 'universe-item' + (b.isCurrent ? ' active' : '');
-    li.innerHTML = \`
-      <span class="universe-dot" style="background:\${colorMap[b.name]}"></span>
-      <span>\${b.name.toUpperCase()}</span>
-      <span class="universe-expand">+</span>
-    \`;
-    li.addEventListener('click', () => showDetail(b.name));
-    list.appendChild(li);
-  });
-})();
+    currentBranchIdx = idx;
+    currentCommitIdx = null;
 
-// ─── Sidebar: Events ───
-(function renderEvents() {
-  const el = document.getElementById('eventList');
-  if (EVENTS.length === 0) {
-    el.innerHTML = '<div class="event-item"><span class="event-icon">&#9679;</span> No events</div>';
-    return;
-  }
-  EVENTS.forEach(ev => {
-    const icons = { fork: '&#10138;', merge: '&#8644;', 'new': '&#9733;' };
-    const div = document.createElement('div');
-    div.className = 'event-item';
-    div.innerHTML = \`<span class="event-icon">\${icons[ev.type] || '&#9679;'}</span> \${ev.label}\`;
-    el.appendChild(div);
-  });
-})();
+    // Header
+    const nameEl = document.getElementById('viewer-branch-name');
+    let badges = '';
+    if (branch.isCurrent) badges += '<span class="badge current">current</span>';
+    if (branch.isMain) badges += '<span class="badge main">main</span>';
+    nameEl.innerHTML = esc(branch.name) + ' ' + badges;
 
-// ─── Main SVG Canvas ───
-(function renderCanvas() {
-  const svg = document.getElementById('branchCanvas');
-  const area = document.getElementById('canvasArea');
-
-  const mainBranch = BRANCHES.find(b => b.isMain);
-  const features = BRANCHES.filter(b => !b.isMain);
-  const PADDING = { top: 60, bottom: 60, left: 220, right: 60 };
-  const LANE_H = 150;
-  const NODE_SPACING = 120; // even spacing between commits
-
-  // Compute canvas width based on max commits
-  const maxCommits = Math.max(...BRANCHES.map(b => b.commits.length), 2);
-  const W = Math.max(area.clientWidth, PADDING.left + maxCommits * NODE_SPACING + PADDING.right, 900);
-  const totalH = PADDING.top + (features.length + 1) * LANE_H + PADDING.bottom;
-
-  svg.setAttribute('viewBox', \`0 0 \${W} \${totalH}\`);
-  svg.style.height = Math.max(totalH, area.clientHeight) + 'px';
-  svg.style.width = W + 'px';
-  svg.style.minHeight = '100%';
-
-  // Lane y-positions: main at top, features below
-  const laneY = {};
-  const MAIN_Y = PADDING.top + 40;
-  if (mainBranch) laneY[mainBranch.name] = MAIN_Y;
-  features.forEach((b, i) => {
-    laneY[b.name] = MAIN_Y + (i + 1) * LANE_H;
-  });
-
-  // Helper: create SVG element
-  function svgEl(tag, attrs) {
-    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
-    return el;
-  }
-
-  // Even spacing for commits on a branch (index-based, not timestamp)
-  function commitX(index, total) {
-    if (total <= 1) return PADDING.left + NODE_SPACING;
-    return PADDING.left + index * ((W - PADDING.left - PADDING.right - 50) / (total - 1));
-  }
-
-  // Draw a branch
-  function drawBranch(branch) {
-    const y = laneY[branch.name];
-    const color = colorMap[branch.name];
-    const commits = [...branch.commits].reverse(); // oldest first
-    if (commits.length === 0) return;
-
-    const positions = commits.map((c, i) => ({
-      x: commitX(i, commits.length), y, commit: c, index: i
-    }));
-
-    // Draw line through all commits + arrow
-    const firstX = positions[0].x;
-    const lastX = positions[positions.length - 1].x;
-    const arrowX = lastX + 40;
-
-    let d = \`M \${firstX} \${y}\`;
-    for (let i = 1; i < positions.length; i++) {
-      d += \` L \${positions[i].x} \${y}\`;
+    // Meta
+    const metaEl = document.getElementById('viewer-meta');
+    let metaHtml = '';
+    if (!branch.isMain) {
+      metaHtml += '<span class="viewer-meta-item"><span class="detail-meta-label">Ahead</span> <span class="viewer-meta-value">' + branch.ahead + '</span></span>';
+      metaHtml += '<span class="viewer-meta-item"><span class="detail-meta-label">Behind</span> <span class="viewer-meta-value">' + branch.behind + '</span></span>';
+      metaHtml += '<span class="viewer-meta-item"><span class="detail-meta-label">Files</span> <span class="viewer-meta-value">' + branch.filesChanged + '</span></span>';
     }
-    d += \` L \${arrowX} \${y}\`;
-    svg.appendChild(svgEl('path', { d, class: 'branch-line', stroke: color }));
-    svg.appendChild(svgEl('polygon', {
-      points: \`\${arrowX},\${y - 6} \${arrowX + 14},\${y} \${arrowX},\${y + 6}\`,
-      fill: color, class: 'branch-arrow'
-    }));
+    metaHtml += '<span class="viewer-meta-item"><span class="detail-meta-label">Commits</span> <span class="viewer-meta-value">' + branch.commits.length + '</span></span>';
+    metaEl.innerHTML = metaHtml;
 
-    // Fork curve from main (for feature branches)
-    if (!branch.isMain && mainBranch) {
-      const mainY = laneY[mainBranch.name];
-      const forkStartX = firstX - 30;
-      const midY = (mainY + y) / 2;
-      svg.appendChild(svgEl('path', {
-        d: \`M \${forkStartX} \${mainY} C \${forkStartX} \${midY} \${firstX} \${midY} \${firstX} \${y}\`,
-        class: 'branch-line', stroke: color, opacity: '0.4'
-      }));
+    // Branch summary from diary
+    const summaryEl = document.getElementById('viewer-summary');
+    summaryEl.innerHTML = branch.summary ? esc(branch.summary) : '';
+    summaryEl.style.display = branch.summary ? 'block' : 'none';
 
-      // Fork label — positioned along the curve, offset to the right to avoid branch name
-      const labelX = forkStartX + 20;
-      const labelY = midY - 2;
-      svg.appendChild(svgEl('rect', {
-        x: String(labelX - 35), y: String(labelY - 10),
-        width: '70', height: '18', rx: '9',
-        fill: color, opacity: '0.12'
-      }));
-      const forkLabel = svgEl('text', {
-        x: String(labelX), y: String(labelY + 4),
-        'text-anchor': 'middle', fill: color, class: 'event-label'
-      });
-      forkLabel.textContent = 'FORKED';
-      svg.appendChild(forkLabel);
+    // Build timeline
+    const listEl = document.getElementById('timeline-list');
+    listEl.innerHTML = branch.commits.map(function(c, ci) {
+      const hasDiary = !!c.diary;
+      const date = new Date(c.timestamp * 1000);
+      const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const isLast = ci === branch.commits.length - 1;
+      return '<div class="tl-commit' + (hasDiary ? ' has-diary' : '') + '" data-ci="' + ci + '" onclick="selectViewerCommit(' + ci + ')">' +
+        '<div class="tl-dot-col">' +
+          '<div class="tl-dot"></div>' +
+          (isLast ? '' : '<div class="tl-line"></div>') +
+        '</div>' +
+        '<div class="tl-info">' +
+          '<div class="tl-header">' +
+            '<span class="tl-hash">' + esc(c.shortHash) + '</span>' +
+            '<span class="tl-msg">' + esc(c.message) + '</span>' +
+            (hasDiary ? '<span class="tl-diary-badge">diary</span>' : '') +
+          '</div>' +
+          '<div class="tl-meta">' + esc(dateStr) + ' by ' + esc(c.author) + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    // Show viewer
+    document.getElementById('table-view').classList.add('hidden');
+    document.getElementById('branch-viewer').classList.add('active');
+
+    // Reset detail
+    document.getElementById('viewer-detail').innerHTML = '<div class="detail-empty">Select a commit to view details</div>';
+
+    // Auto-select first commit
+    setTimeout(function() { selectViewerCommit(0); }, 50);
+  }
+
+  function closeBranchViewer() {
+    document.getElementById('branch-viewer').classList.remove('active');
+    document.getElementById('table-view').classList.remove('hidden');
+    currentBranchIdx = null;
+    currentCommitIdx = null;
+  }
+
+  function selectViewerCommit(ci) {
+    if (currentBranchIdx === null) return;
+    const branch = BRANCHES[currentBranchIdx];
+    if (ci < 0 || ci >= branch.commits.length) return;
+
+    // Update timeline active state
+    const nodes = document.querySelectorAll('.tl-commit');
+    nodes.forEach(function(n) { n.classList.remove('active'); });
+    const activeNode = document.querySelector('.tl-commit[data-ci="' + ci + '"]');
+    if (activeNode) {
+      activeNode.classList.add('active');
+      activeNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
-    // Branch label (left side, with enough room)
-    const labelEl = svgEl('text', {
-      x: String(PADDING.left - 16), y: String(y + 5),
-      'text-anchor': 'end', class: 'branch-label-text',
-      fill: color, 'font-weight': '600', 'font-size': '13', cursor: 'pointer'
-    });
-    labelEl.textContent = branch.name;
-    labelEl.addEventListener('click', () => showDetail(branch.name));
-    svg.appendChild(labelEl);
+    currentCommitIdx = ci;
 
-    // Commit nodes — only show labels on first, last, and every Nth to prevent overlap
-    const labelEvery = commits.length <= 5 ? 1 : Math.ceil(commits.length / 5);
-    positions.forEach((p, idx) => {
-      const g = svgEl('g', { class: 'commit-group' });
-      const showLabel = idx === 0 || idx === positions.length - 1 || idx % labelEvery === 0;
+    // Update position
+    document.getElementById('viewer-pos').textContent = (ci + 1) + ' / ' + branch.commits.length;
 
-      // Outer circle
-      g.appendChild(svgEl('circle', {
-        cx: String(p.x), cy: String(y), r: '8',
-        fill: 'white', stroke: color, 'stroke-width': '2.5',
-        class: 'commit-node', cursor: 'pointer'
-      }));
-      // Inner dot
-      g.appendChild(svgEl('circle', {
-        cx: String(p.x), cy: String(y), r: '3.5',
-        fill: color, 'pointer-events': 'none'
-      }));
+    // Hydrate detail panel
+    hydrateDetail(branch.commits[ci]);
+  }
 
-      // Labels — only on selected nodes
-      if (showLabel) {
-        const hashEl = svgEl('text', {
-          x: String(p.x), y: String(y + 24),
-          'text-anchor': 'middle', 'font-size': '10',
-          'font-family': "'JetBrains Mono', monospace",
-          fill: color, opacity: '0.8'
-        });
-        hashEl.textContent = 'Hash: ' + p.commit.shortHash;
-        g.appendChild(hashEl);
+  function hydrateDetail(commit) {
+    const detail = document.getElementById('viewer-detail');
+    let html = '';
 
-        const msgEl = svgEl('text', {
-          x: String(p.x), y: String(y + 38),
-          'text-anchor': 'middle', 'font-size': '10',
-          'font-family': "'Inter', sans-serif", fill: '#7f8c8d'
-        });
-        const maxLen = Math.min(Math.floor(NODE_SPACING / 7), 30);
-        msgEl.textContent = p.commit.message.length > maxLen
-          ? p.commit.message.slice(0, maxLen - 2) + '...'
-          : p.commit.message;
-        g.appendChild(msgEl);
+    // Commit header
+    const date = new Date(commit.timestamp * 1000);
+    const fullDate = date.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-        const authEl = svgEl('text', {
-          x: String(p.x), y: String(y + 50),
-          'text-anchor': 'middle', 'font-size': '9',
-          'font-family': "'Inter', sans-serif", fill: '#95a5a6'
-        });
-        authEl.textContent = '@' + p.commit.author;
-        g.appendChild(authEl);
+    html += '<div class="detail-commit-header">';
+    html += '<div class="detail-commit-msg">' + esc(commit.message) + '</div>';
+    html += '<div class="detail-commit-meta">';
+    html += '<span class="detail-meta-item"><span class="detail-meta-label">Hash</span> <span class="detail-meta-value">' + esc(commit.shortHash) + '</span></span>';
+    html += '<span class="detail-meta-item"><span class="detail-meta-label">Author</span> <span class="detail-meta-value">' + esc(commit.author) + '</span></span>';
+    html += '<span class="detail-meta-item"><span class="detail-meta-label">Date</span> <span class="detail-meta-value">' + esc(fullDate) + '</span></span>';
+    html += '</div></div>';
+
+    // Commit summary (from diary or auto-generated)
+    if (commit.commitSummary) {
+      html += '<div class="detail-summary-brief">' + esc(commit.commitSummary) + '</div>';
+    }
+
+    // Stats bar
+    html += '<div class="detail-stats">';
+    html += '<div class="stat-block"><span class="stat-value blue">' + commit.files.length + '</span><span class="stat-label">Files changed</span></div>';
+    html += '<div class="stat-block"><span class="stat-value green">+' + commit.insertions + '</span><span class="stat-label">Insertions</span></div>';
+    html += '<div class="stat-block"><span class="stat-value red">-' + commit.deletions + '</span><span class="stat-label">Deletions</span></div>';
+    html += '</div>';
+
+    // Diary section (if present)
+    if (commit.diary) {
+      const d = commit.diary;
+      html += '<div class="detail-diary">';
+      html += '<div class="detail-diary-title">' + esc(d.title) + '</div>';
+
+      if (d.whatChanged.length > 0) {
+        html += '<div class="detail-diary-section changes"><div class="detail-diary-section-label">What Changed</div><ul>' +
+          d.whatChanged.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
       }
+      if (d.decisions.length > 0) {
+        html += '<div class="detail-diary-section decisions"><div class="detail-diary-section-label">Decisions</div><ul>' +
+          d.decisions.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
+      }
+      if (d.issues.length > 0) {
+        html += '<div class="detail-diary-section issues"><div class="detail-diary-section-label">Issues</div><ul>' +
+          d.issues.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
+      }
+      if (d.nextSteps.length > 0) {
+        html += '<div class="detail-diary-section next-steps"><div class="detail-diary-section-label">Next Steps</div><ul>' +
+          d.nextSteps.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
+      }
+      html += '</div>';
+    }
 
-      // Hover tooltip (always works, even on unlabeled nodes)
-      g.querySelector('.commit-node').addEventListener('mouseenter', (e) => {
-        const tooltip = document.getElementById('commitTooltip');
-        tooltip.style.display = 'block';
-        tooltip.style.left = e.clientX + 14 + 'px';
-        tooltip.style.top = e.clientY - 10 + 'px';
-        tooltip.innerHTML = \`
-          <div class="tooltip-hash">\${p.commit.shortHash}</div>
-          <div class="tooltip-msg">\${p.commit.message}</div>
-          <div class="tooltip-author">\${p.commit.author} &middot; \${p.commit.date}</div>
-        \`;
+    // Files changed list
+    if (commit.files.length > 0) {
+      html += '<div class="detail-files">';
+      html += '<div class="detail-files-title">Files Changed</div>';
+      html += '<ul class="file-list">';
+      commit.files.forEach(function(f) {
+        var ext = f.split('.').pop() || '';
+        var icon = ext === 'ts' || ext === 'tsx' ? '&#9672;' :
+                   ext === 'js' || ext === 'jsx' ? '&#9672;' :
+                   ext === 'json' ? '&#9881;' :
+                   ext === 'md' ? '&#9997;' :
+                   ext === 'css' || ext === 'scss' ? '&#9734;' :
+                   '&#9656;';
+        html += '<li class="file-item"><i class="file-icon">' + icon + '</i>' + esc(f) + '</li>';
       });
-      g.querySelector('.commit-node').addEventListener('mouseleave', () => {
-        document.getElementById('commitTooltip').style.display = 'none';
-      });
-      g.querySelector('.commit-node').addEventListener('click', () => showDetail(branch.name));
+      html += '</ul></div>';
+    }
 
-      svg.appendChild(g);
-    });
+    detail.innerHTML = html;
   }
 
-  // Draw main first (background), then features on top
-  if (mainBranch) drawBranch(mainBranch);
-  features.forEach(b => drawBranch(b));
+  function viewerNav(direction) {
+    if (currentCommitIdx === null) return;
+    selectViewerCommit(currentCommitIdx + direction);
+  }
 
-  // ─── Minimap ───
-  const miniSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  miniSvg.setAttribute('viewBox', \`0 0 \${W} \${totalH}\`);
-  miniSvg.setAttribute('preserveAspectRatio', 'none');
-  BRANCHES.forEach(b => {
-    const commits = [...b.commits].reverse();
-    const y = laneY[b.name];
-    if (commits.length < 1) return;
-    let d = '';
-    commits.forEach((c, i) => {
-      const x = commitX(i, commits.length);
-      d += (i === 0 ? 'M' : 'L') + \` \${x} \${y}\`;
-    });
-    miniSvg.appendChild(svgEl('path', {
-      d, fill: 'none', stroke: colorMap[b.name], 'stroke-width': '3', opacity: '0.6'
-    }));
+  function esc(str) {
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  // Keyboard navigation
+  document.addEventListener('keydown', function(e) {
+    if (currentBranchIdx === null) return;
+    if (e.key === 'ArrowUp' || e.key === 'k') {
+      e.preventDefault();
+      viewerNav(-1);
+    } else if (e.key === 'ArrowDown' || e.key === 'j') {
+      e.preventDefault();
+      viewerNav(1);
+    } else if (e.key === 'Escape' || e.key === 'Backspace') {
+      e.preventDefault();
+      closeBranchViewer();
+    }
   });
-  document.getElementById('minimap').appendChild(miniSvg);
-})();
-
-// ─── Detail Panel ───
-function showDetail(branchName) {
-  const branch = BRANCHES.find(b => b.name === branchName);
-  if (!branch) return;
-  const panel = document.getElementById('detailPanel');
-  const color = colorMap[branchName];
-
-  let diaryHtml = '';
-  if (branch.diaryEntries && branch.diaryEntries.length > 0) {
-    diaryHtml = '<div class="detail-diary">';
-    // Show most recent entries (up to 5)
-    const entries = branch.diaryEntries.slice(0, 5);
-    entries.forEach(entry => {
-      diaryHtml += '<div class="diary-entry">';
-      diaryHtml += \`<div class="diary-entry-title">\${entry.title}</div>\`;
-      if (entry.date) diaryHtml += \`<div class="diary-entry-date">\${entry.date}</div>\`;
-
-      if (entry.whatChanged.length > 0) {
-        diaryHtml += '<div class="diary-section"><div class="diary-section-title changes">What Changed</div><ul>';
-        entry.whatChanged.forEach(item => { diaryHtml += \`<li>\${item}</li>\`; });
-        diaryHtml += '</ul></div>';
-      }
-      if (entry.decisions.length > 0) {
-        diaryHtml += '<div class="diary-section"><div class="diary-section-title decisions">Decisions</div><ul>';
-        entry.decisions.forEach(item => { diaryHtml += \`<li>\${item}</li>\`; });
-        diaryHtml += '</ul></div>';
-      }
-      if (entry.issues.length > 0) {
-        diaryHtml += '<div class="diary-section"><div class="diary-section-title issues">Issues</div><ul>';
-        entry.issues.forEach(item => { diaryHtml += \`<li>\${item}</li>\`; });
-        diaryHtml += '</ul></div>';
-      }
-      if (entry.nextSteps.length > 0) {
-        diaryHtml += '<div class="diary-section"><div class="diary-section-title next-steps">Next Steps</div><ul>';
-        entry.nextSteps.forEach(item => { diaryHtml += \`<li>\${item}</li>\`; });
-        diaryHtml += '</ul></div>';
-      }
-      diaryHtml += '</div>';
-    });
-    diaryHtml += '</div>';
-  } else {
-    diaryHtml = '<div class="detail-diary" style="color:var(--text-light);font-size:12px;padding:0 20px 16px;">No diary entries for this branch.</div>';
-  }
-
-  // Activity sparkline
-  const sparkData = branch.commits.map((c, i) => i).reverse();
-  const sparkW = 300;
-  const sparkH = 40;
-  let sparkPath = '';
-  if (sparkData.length > 1) {
-    sparkData.forEach((_, i) => {
-      const x = (i / (sparkData.length - 1)) * sparkW;
-      const y = sparkH - (Math.random() * 0.6 + 0.2) * sparkH;
-      sparkPath += (i === 0 ? 'M' : 'L') + \` \${x} \${y}\`;
-    });
-  }
-
-  panel.innerHTML = \`
-    <div class="detail-header">
-      <button class="detail-close" onclick="document.getElementById('detailPanel').style.display='none'">&times;</button>
-      <div class="detail-name">
-        <span class="dot" style="background:\${color}"></span>
-        \${branch.name.toUpperCase()}
-      </div>
-      <div class="detail-status">
-        Universe Status: <span class="ahead">\${branch.ahead} Ahead</span>, <span class="behind">\${branch.behind} Behind</span> MAIN
-      </div>
-    </div>
-    <div class="detail-stats">
-      <span class="detail-stat-label">Commits</span>
-      <span class="detail-stat-value">\${branch.commits.length}</span>
-      <span class="detail-stat-label">Files Changed</span>
-      <span class="detail-stat-value">\${branch.filesChanged}</span>
-    </div>
-    <div class="detail-chart">
-      <svg viewBox="0 0 \${sparkW} \${sparkH}" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="\${color}" stop-opacity="0.3"/>
-            <stop offset="100%" stop-color="\${color}" stop-opacity="0.02"/>
-          </linearGradient>
-        </defs>
-        \${sparkPath ? \`
-          <path d="\${sparkPath} L \${sparkW} \${sparkH} L 0 \${sparkH} Z" fill="url(#sparkGrad)"/>
-          <path d="\${sparkPath}" fill="none" stroke="\${color}" stroke-width="2"/>
-        \` : ''}
-      </svg>
-    </div>
-    \${diaryHtml}
-  \`;
-  panel.style.display = 'block';
-}
-
-// ─── Temporal Scrubber ───
-(function initScrubber() {
-  const allTs = BRANCHES.flatMap(b => b.commits.map(c => c.timestamp)).filter(Boolean);
-  if (allTs.length === 0) return;
-  const minTs = Math.min(...allTs);
-  const maxTs = Math.max(...allTs);
-
-  function formatTs(ts) {
-    const d = new Date(ts * 1000);
-    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-  }
-
-  document.getElementById('scrubberDates').innerHTML = \`
-    <span>\${formatTs(minTs)}</span>
-    <span>\${formatTs(maxTs)}</span>
-  \`;
-  document.getElementById('scrubberRangeBadge').textContent =
-    formatTs(minTs) + ' - ' + formatTs(maxTs);
-})();
-
-// ─── Search ───
-document.getElementById('searchInput').addEventListener('input', (e) => {
-  const q = e.target.value.toLowerCase();
-  document.querySelectorAll('.universe-item').forEach((el, i) => {
-    const name = BRANCHES[i]?.name.toLowerCase() || '';
-    el.style.display = name.includes(q) ? '' : 'none';
-  });
-});
 </script>
 </body>
 </html>`;

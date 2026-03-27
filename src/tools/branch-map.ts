@@ -50,6 +50,14 @@ export function registerBranchMap(server: McpServer) {
         const ahead = isMain ? 0 : git.getBranchCommitCount(project_path, b, mainBranch);
         const behind = isMain ? 0 : git.getBehindCount(project_path, b, mainBranch);
         const commits = git.getBranchCommits(project_path, b, 10);
+        // Enrich commits with per-commit file data for branch viewer
+        for (const c of commits) {
+          c.files = git.getCommitFiles(project_path, c.shortHash);
+          const stats = git.getCommitStats(project_path, c.shortHash);
+          c.insertions = stats.insertions;
+          c.deletions = stats.deletions;
+          c.body = git.getCommitBody(project_path, c.shortHash);
+        }
         const filesChanged = isMain ? 0 : git.getFilesChangedCount(project_path, b, mainBranch);
 
         return { name: b, isCurrent, isMain, summary, ahead, behind, commits, filesChanged, diaryEntries };

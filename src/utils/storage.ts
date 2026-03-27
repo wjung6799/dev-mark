@@ -122,6 +122,7 @@ export interface DiaryEntry {
   title: string;
   summary: string;
   date: string;
+  commit: string;
   whatChanged: string[];
   decisions: string[];
   issues: string[];
@@ -136,6 +137,7 @@ export function parseDiaryEntries(content: string): DiaryEntry[] {
   for (const block of blocks) {
     const summaryMatch = block.match(/^summary:\s*"?(.+?)"?\s*$/m);
     const dateMatch = block.match(/^date:\s*(.+)$/m);
+    const commitMatch = block.match(/^commit:\s*(.+)$/m);
     const titleMatch = block.match(/^#+ (.+)$/m);
 
     if (!titleMatch && !summaryMatch) continue;
@@ -144,6 +146,7 @@ export function parseDiaryEntries(content: string): DiaryEntry[] {
       title: titleMatch?.[1] || summaryMatch?.[1] || "",
       summary: summaryMatch?.[1] || titleMatch?.[1] || "",
       date: dateMatch?.[1] || "",
+      commit: commitMatch?.[1] || "",
       whatChanged: extractSection(block, "What Changed"),
       decisions: extractSection(block, "Decisions"),
       issues: extractSection(block, "Issues"),

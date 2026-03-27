@@ -39,11 +39,15 @@ export function registerWriteEntry(server: McpServer) {
         : "unknown";
 
       const now = new Date().toISOString();
+      const commit = git.isGitRepo(project_path)
+        ? git.getHeadCommitHash(project_path)
+        : "none";
 
       const sections = [
         `---`,
         `date: ${now}`,
         `branch: ${branch}`,
+        `commit: ${commit}`,
         `summary: "${summary}"`,
         `---`,
         "",
