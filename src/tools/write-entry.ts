@@ -66,7 +66,10 @@ export function registerWriteEntry(server: McpServer) {
       }
 
       const content = sections.join("\n") + "\n";
-      const filePath = storage.writeEntry(project_path, content);
+      const isMainBranch = branch === "main" || branch === "master";
+      const filePath = isMainBranch
+        ? storage.writeEntry(project_path, content)
+        : storage.writeBranchEntry(project_path, branch, content);
 
       return {
         content: [

@@ -36,6 +36,12 @@ export function getDiffSummary(cwd: string): string {
   return parts.join("\n\n") || "No changes";
 }
 
+export function getLocalBranches(cwd: string): string[] {
+  const output = run("git branch --format='%(refname:short)'", cwd);
+  if (!output) return [];
+  return output.split("\n").map((b) => b.trim()).filter(Boolean);
+}
+
 export function getDiffFull(cwd: string): string {
   const staged = run("git diff --cached", cwd);
   const unstaged = run("git diff", cwd);
