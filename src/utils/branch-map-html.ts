@@ -78,7 +78,9 @@ function buildSummaryCell(b: BranchData): string {
 
   const nextSteps = b.diaryEntries[b.diaryEntries.length - 1]?.nextSteps || [];
 
-  let html = `<div class="summary-title">${esc(b.summary)}</div>`;
+  let html = `<div class="summary-title" onclick="toggleSummary(event)">${esc(b.summary)} <span class="summary-toggle">&#9660;</span></div>`;
+
+  html += `<div class="summary-details collapsed">`;
 
   if (titles.length > 1) {
     html += `<div class="summary-timeline"><span class="section-label">Timeline</span> ${titles.map(t => esc(t)).join(" &rarr; ")}</div>`;
@@ -99,6 +101,8 @@ function buildSummaryCell(b: BranchData): string {
   if (nextSteps.length > 0) {
     html += `<div class="summary-section next-steps"><span class="section-label">Next</span><ul>${nextSteps.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>`;
   }
+
+  html += `</div>`;
 
   return html;
 }
@@ -407,6 +411,31 @@ function buildHtml(branches: BranchData[], projectName: string): string {
     font-weight: 500;
     color: #e0e0e0;
     margin-bottom: 6px;
+    cursor: pointer;
+  }
+
+  .summary-title:hover { color: #4fc3f7; }
+
+  .summary-toggle {
+    font-size: 9px;
+    color: #555;
+    margin-left: 4px;
+    display: inline-block;
+    transition: transform 0.2s;
+  }
+
+  .summary-title:hover .summary-toggle { color: #4fc3f7; }
+
+  .summary-details {
+    overflow: hidden;
+    max-height: 500px;
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    opacity: 1;
+  }
+
+  .summary-details.collapsed {
+    max-height: 0;
+    opacity: 0;
   }
 
   .summary-timeline {
@@ -994,6 +1023,16 @@ function buildHtml(branches: BranchData[], projectName: string): string {
 
   let currentBranchIdx = null;
   let currentCommitIdx = null;
+
+  function toggleSummary(e) {
+    e.stopPropagation();
+    const title = e.currentTarget;
+    const details = title.nextElementSibling;
+    if (!details || !details.classList.contains('summary-details')) return;
+    const collapsed = details.classList.toggle('collapsed');
+    const arrow = title.querySelector('.summary-toggle');
+    if (arrow) arrow.innerHTML = collapsed ? '&#9660;' : '&#9650;';
+  }
 
   function openBranchViewer(idx) {
     const branch = BRANCHES[idx];
