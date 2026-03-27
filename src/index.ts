@@ -6,6 +6,7 @@ import { registerWriteEntry } from "./tools/write-entry.js";
 import { registerReadEntries } from "./tools/read-entries.js";
 import { registerCatchMeUp } from "./tools/catch-me-up.js";
 import { registerSetup } from "./tools/setup.js";
+import { registerBranchMap } from "./tools/branch-map.js";
 import { autoSetup } from "./utils/auto-setup.js";
 
 // Auto-setup on first run: adds .devdiary/ to .gitignore
@@ -22,6 +23,7 @@ registerWriteEntry(server);
 registerReadEntries(server);
 registerCatchMeUp(server);
 registerSetup(server);
+registerBranchMap(server);
 
 async function main() {
   const transport = new StdioServerTransport();
