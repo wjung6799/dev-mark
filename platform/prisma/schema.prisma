@@ -18,6 +18,8 @@ model User {
   updatedAt      DateTime  @updatedAt
   projects       Project[]
   sessions       Session[]
+  apiKeys        ApiKey[]
+  rules          Rule[]
 }
 
 model Session {
@@ -30,14 +32,15 @@ model Session {
 }
 
 model Project {
-  id        String     @id @default(cuid())
+  id        String       @id @default(cuid())
   name      String
   userId    String
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   pages     WikiPage[]
   notes     Note[]
+  entries   DiaryEntry[]
 }
 
 model WikiPage {
@@ -58,4 +61,38 @@ model Note {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String   @default("default")
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DiaryEntry {
+  id        String   @id @default(cuid())
+  date      DateTime
+  branch    String
+  commit    String   @default("")
+  summary   String
+  content   String
+  source    String   @default("sync")
+  projectId String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, date, branch, commit])
+}
+
+model Rule {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

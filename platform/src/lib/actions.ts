@@ -77,6 +77,12 @@ export async function loginAction(_prev: { error: string } | null, formData: For
     path: "/",
   });
 
+  // If there's a callback (CLI login flow), redirect to the callback handler
+  const callbackUrl = formData.get("callback") as string;
+  if (callbackUrl) {
+    redirect(`/api/auth/callback?callback=${encodeURIComponent(callbackUrl)}`);
+  }
+
   redirect("/dashboard");
 }
 

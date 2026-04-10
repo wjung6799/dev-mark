@@ -22,6 +22,12 @@ export default async function DashboardPage() {
       <header className="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">Dev Diary</h1>
         <div className="flex items-center gap-4">
+          <Link
+            href="/rules"
+            className="text-sm text-gray-400 hover:text-white transition"
+          >
+            Rules
+          </Link>
           {!user.isPaid && active && (
             <span className="text-sm text-yellow-400">
               {daysLeft} days left in trial

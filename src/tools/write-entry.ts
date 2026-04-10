@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as git from "../utils/git.js";
 import * as storage from "../utils/storage.js";
+import { isConfigured, syncEntry } from "../utils/sync.js";
 
 interface WriteEntryParams {
   project_path: string;
@@ -75,11 +76,28 @@ export function registerWriteEntry(server: McpServer) {
         ? storage.writeEntry(project_path, content)
         : storage.writeBranchEntry(project_path, branch, content);
 
+      // Sync to platform if configured
+      let syncStatus = "";
+      if (isConfigured()) {
+        const projectName = project_path.split("/").pop() || "unknown";
+        const result = await syncEntry(projectName, {
+          date: now,
+          branch,
+          commit,
+          summary,
+          content,
+          source: "sync",
+        });
+        syncStatus = result.ok
+          ? " (synced to platform)"
+          : ` (sync failed: ${result.error})`;
+      }
+
       return {
         content: [
           {
             type: "text" as const,
-            text: `Diary entry saved: ${filePath}`,
+            text: `Diary entry saved: ${filePath}${syncStatus}`,
           },
         ],
       };

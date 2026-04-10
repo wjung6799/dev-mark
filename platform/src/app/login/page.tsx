@@ -3,15 +3,27 @@
 import { loginAction } from "@/lib/actions";
 import Link from "next/link";
 import { useActionState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 
-export default function LoginPage() {
+function LoginForm() {
   const [state, formAction, pending] = useActionState(loginAction, null);
+  const searchParams = useSearchParams();
+  const callback = searchParams.get("callback");
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950">
       <div className="w-full max-w-sm p-8">
-        <h1 className="text-2xl font-bold text-white mb-6">Log In</h1>
+        <h1 className="text-2xl font-bold text-white mb-2">Log In</h1>
+        {callback && (
+          <p className="text-gray-400 text-sm mb-6">
+            Sign in to connect your CLI to Dev Diary.
+          </p>
+        )}
         <form action={formAction} className="space-y-4">
+          {callback && (
+            <input type="hidden" name="callback" value={callback} />
+          )}
           <input
             name="email"
             type="email"
@@ -34,7 +46,7 @@ export default function LoginPage() {
             disabled={pending}
             className="w-full py-3 bg-white text-black font-semibold rounded-lg hover:bg-gray-200 transition disabled:opacity-50"
           >
-            {pending ? "Logging in..." : "Log In"}
+            {pending ? "Logging in..." : callback ? "Log In & Connect CLI" : "Log In"}
           </button>
         </form>
         <p className="text-gray-500 text-sm mt-4 text-center">
@@ -45,5 +57,13 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

@@ -23,6 +23,7 @@ export default async function ProjectPage({
     include: {
       pages: { orderBy: { updatedAt: "desc" } },
       notes: { orderBy: { updatedAt: "desc" } },
+      entries: { orderBy: { date: "desc" }, take: 20 },
     },
   });
 
@@ -127,6 +128,47 @@ export default async function ProjectPage({
             )}
           </section>
         </div>
+
+        {/* Diary Entries */}
+        {project.entries.length > 0 && (
+          <section className="mt-10">
+            <h2 className="text-lg font-semibold mb-4">Diary Entries</h2>
+            <div className="space-y-3">
+              {project.entries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="bg-gray-900 border border-gray-800 rounded-lg p-4"
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className="text-xs font-mono text-gray-500">
+                      {entry.date.toLocaleDateString()}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 bg-gray-800 rounded text-gray-400">
+                      {entry.branch}
+                    </span>
+                    {entry.commit && (
+                      <span className="text-xs font-mono text-gray-600">
+                        {entry.commit.slice(0, 7)}
+                      </span>
+                    )}
+                    <span className="text-xs text-gray-700">
+                      {entry.source}
+                    </span>
+                  </div>
+                  <h3 className="font-medium">{entry.summary}</h3>
+                  <details className="mt-2">
+                    <summary className="text-sm text-gray-500 cursor-pointer hover:text-gray-300 transition">
+                      Show full entry
+                    </summary>
+                    <pre className="text-sm text-gray-400 mt-2 whitespace-pre-wrap font-sans leading-relaxed">
+                      {entry.content}
+                    </pre>
+                  </details>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
